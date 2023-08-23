@@ -1,5 +1,7 @@
 from flask import Flask, Response, request
+from flask_limiter import Limiter
 import requests
+import traceback
 import re
 
 
@@ -10,32 +12,32 @@ class ProxyApp:
 
     def __init__(self):
         self.app = Flask(__name__)
+        self.limiter = Limiter(
+            app=self.app,
+            key_func=lambda: request.remote_addr,  # Rate limit by IP address
+            default_limits=["2000 per minute", "60 per second"]
+        )
+
+        self.trace = lambda code: (f"<pre>\n{traceback.format_exc()}</pre>", code,) \
+            if self.app.debug else ("Error %d" % code, code,)
+
         self.yt_domain: str = "youtube.com"
-        self.allow_hosts: list[str] = [
-            'accounts.google.com', 
-            'apis.google.com', 
-            'client-channel.google.com', 
-            'clients4.google.com', 
-            'developers.google.com', 
-            'docs.google.com', 
-            'families.google.com', 
-            'fonts.googleapis.com', 
-            'fonts.gstatic.com', 
-            'i.ytimg.com', 
-            'jnn-pa.googleapis.com', 
-            'myaccount.google.com', 
-            'play.google.com', 
-            'ssl.gstatic.com', 
-            'support.google.com', 
-            'www.google.com', 
-            'www.google.com.ua', 
-            'www.google.ru', 
-            'www.google.by',
-            'www.google.kz',
-            'www.googletagmanager.com', 
-            'www.gstatic.com', 
-            'yt3.ggpht.com'
-        ]
+        self.allow_hosts: tuple[str] = (
+            'accounts.google.com', 'apis.google.com', 'client-channel.google.com',
+            'clients4.google.com', 'developers.google.com', 'docs.google.com',
+            'families.google.com', 'fonts.googleapis.com', 'fonts.gstatic.com',
+            'i.ytimg.com', 'jnn-pa.googleapis.com', 'myaccount.google.com',
+            'play.google.com', 'ssl.gstatic.com', 'support.google.com',
+            'www.google.com', 'www.google.com.ua', 'www.google.ru', 'www.google.by',
+            'www.google.kz', 'www.googletagmanager.com', 'www.gstatic.com',
+            'yt3.ggpht.com', 'googleads.g.doubleclick.net', 'static.doubleclick.net',
+        )
+        self.trackers_endswith: tuple[str] = (
+            "/log", "/stats/qoe", "/log_event", "/ptracking"
+        )
+        self.trackers_f: tuple[str] = (
+            "doubleclick.net", "/pagead/",
+        )
 
     def __is_allowed_host(self, url: str) -> bool | None:
         """
@@ -101,7 +103,12 @@ class ProxyApp:
             match.group(4)
         )
 
-    def __fetch_and_proxy(self, external_url: str, method: str = "GET", params: dict | None = None, headers: dict | None = None) -> Response | tuple:
+    def __fetch_and_proxy(
+            self, external_url: str, method: str = "GET", 
+            params: dict | None = None, 
+            headers: dict | None = None, 
+            data: bytes | None = None
+        ) -> Response | tuple:
         """
         Fetch content from an external URL and proxy it to the client.
 
@@ -110,13 +117,18 @@ class ProxyApp:
             method (str, optional): The HTTP method to use for the request (default is "GET").
             params (dict, optional): A dictionary of query parameters to include in the request (default is None).
             headers (dict, optional): A dictionary of HTTP headers to include in the request (default is None).
+            data (bytes, optional): Data sent in the post-request
 
         Returns:
             Flask response or tuple: 
                 - If the request is successful, returns a Flask response containing the proxied content.
-                - If there's an error during the request, returns a tuple with an error message and an appropriate HTTP status code (400 for request error, 500 for other errors).
+                - If there's an error during the request, returns a tuple with an error message and an appropriate
+                  HTTP status code (400 for request error, 500 for other errors).
         """
         try:
+            if external_url.endswith(self.trackers_endswith) or any([(f in external_url) for f in self.trackers_f]):
+                return "", 204
+
             if not params:
                 params = {}
             if "key" not in params.keys():
@@ -138,17 +150,43 @@ class ProxyApp:
                 match_url_host = re.search(r'(https?://)?([^:/]+)(:\d+)?', external_url)
                 if match_url_host:
                     headers["Host"] = match_url_host.group(2)
+
             else:
                 headers = None
 
             if params:
-                params = {key: value.replace(request.host, self.yt_domain) for key, value in dict(params).items()}
+                params = {
+                    key: value.replace(request.host, self.yt_domain) 
+                    for key, value in dict(params).items()
+                }
+
+            if method == "POST":
+                requests.request(
+                    method="OPTIONS",
+                    url=external_url,
+                    headers={
+                        # "authority": "jnn-pa.googleapis.com", 
+                        "accept": "*/*", 
+                        "access-control-request-headers": "content-type,x-goog-api-key,x-user-agent", 
+                        "access-control-request-method": "POST", 
+                        "cache-control": "no-cache", 
+                        "origin": f"https://www.{self.yt_domain}", 
+                        "pragma": "no-cache", 
+                        "referer": f"https://www.{self.yt_domain}/", 
+                        "sec-fetch-dest": "empty", 
+                        "sec-fetch-mode": "cors", 
+                        "sec-fetch-site": "cross-site", 
+                        "user-agent": headers["User-Agent"] if (headers and "User-Agent" in headers.keys()) else None
+                    },
+                    timeout=3
+                )
 
             response = requests.request(
                 method=method, 
                 url=external_url, 
                 params=params, 
-                headers=headers, 
+                headers=headers,
+                data=data,
                 allow_redirects=False, 
                 timeout=5
             )
@@ -156,17 +194,21 @@ class ProxyApp:
             response.headers = {
                 key: value.replace(self.yt_domain, request.host)
                 for key, value in response.headers.items()
-                if key not in ["Transfer-Encoding", "Content-Encoding"]
+                if key not in ("Transfer-Encoding", "Content-Encoding",)
             }
 
             if "Location" in response.headers.keys():
                 response.headers["Location"] = \
-                    re.sub(r'(https?://[\w.-]+(?::\d+)?)', self.__replace_url, response.headers["Location"])
+                    re.sub(
+                        r'(https?://[\w.-]+(?::\d+)?)', 
+                        self.__replace_url, response.headers["Location"]
+                    )
 
+            # content process
             content: bytes = response.content
             c_type: str = response.headers.get("Content-Type")
             if c_type:
-                if c_type.split("/")[0] in ["text", "application"]:
+                if c_type.split("/")[0] in ("text", "application",):
                     domain_pattern: re.Pattern[str] = re.compile(r'\b(www\.)?youtube\.com\b')
                     content: str = re.sub(domain_pattern, request.host, response.text)
 
@@ -174,6 +216,9 @@ class ProxyApp:
                         content = content.replace(f"https://{request.host}", request.host_url[:-1])
 
                     content: str = re.sub(r'(https?://[\w.-]+(?::\d+)?)', self.__replace_url, content)
+
+                    if request.url.endswith(("base.js", "desktop_polymer_enable_wil_icons.js",)):
+                        content: str = re.sub(r'(?<=\s|")//(.*?)(?=\s|"|$)', request.host_url+r'https://\1', content)
 
                     content: str = re.sub(r'(http://)([^/]+)(/http://)([^/]+)', self.__replace_scheme, content)
 
@@ -187,16 +232,16 @@ class ProxyApp:
             return proxied_response
 
         except requests.exceptions.RequestException as e:
-            return str(e), 400
+            return self.trace(400)
         
         except Exception as e:
-            return str(e), 500
+            return self.trace(500)
 
     def run(self):
         """
         Start the Flask application.
         """
-        @self.app.route('/<path:path>', methods=["GET", "POST", "HEAD", "OPTIONS"])
+        @self.app.route('/<path:path>', methods=("GET", "POST", "HEAD", "OPTIONS",))
         def proxy(path: str) -> Response:
             """
             Handle requests to proxy content from an external URL.
@@ -222,10 +267,11 @@ class ProxyApp:
                 external_url, 
                 request.method, 
                 request.args, 
-                request.headers
+                request.headers,
+                request.data
             )
         
-        @self.app.route('/', methods=["GET"])
+        @self.app.route('/', methods=("GET",))
         def main() -> Response:
             """
             Handle requests to the main endpoint, typically used for proxying the main domain.
