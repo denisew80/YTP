@@ -12,6 +12,7 @@ class ProxyApp:
 
     def __init__(self):
         self.app = Flask(__name__)
+        # Set up rate limiting for requests
         self.limiter = Limiter(
             app=self.app,
             key_func=lambda: request.remote_addr,  # Rate limit by IP address
@@ -21,10 +22,21 @@ class ProxyApp:
             ]
         )
 
-        self.trace = lambda code: (f"<pre>\n{traceback.format_exc()}</pre>", code,) \
-            if self.app.debug else ("Error %d" % code, code,)
+        # Function to format traceback errors for debugging
+        self.trace = lambda code: (
+            f"<pre>\n{traceback.format_exc()}</pre>", code,
+        ) if self.app.debug else ("Error %d" % code, code,)
 
+        # Define constants
         self.yt_domain: str = "youtube.com"
+        self.trackers_endswith: tuple[str] = (
+            "/log", "/jserror", "/feedback", "/stats/qoe", "/log_event", "/ptracking", "/stats/atr",
+        )
+        self.trackers_f: tuple[str] = (
+            "doubleclick.net", "googlesyndication.com", "/pagead/",
+        )
+
+        # List of allowed hosts
         self.allow_hosts = set([
             'accounts.google.com', 
             'apis.google.com', 
@@ -49,19 +61,12 @@ class ProxyApp:
             'yt3.ggpht.com', 
             'googleads.g.doubleclick.net', 
             'static.doubleclick.net',
-        ]+[
+        ] + [
             "www%s" % h 
             for h in requests.get(
                 "https://www.google.com/supported_domains"
             ).text.split("\n") if h
         ])
-
-        self.trackers_endswith: tuple[str] = (
-            "/log", "/jserror", "/feedback", "/stats/qoe", "/log_event", "/ptracking", "/stats/atr",
-        )
-        self.trackers_f: tuple[str] = (
-            "doubleclick.net", "googlesyndication.com", "/pagead/",
-        )
 
     def __is_allowed_host(self, url: str) -> bool | None:
         """
@@ -78,9 +83,7 @@ class ProxyApp:
         """
         match_ = re.search(r'https?://([^:/]+)', url)
         if match_:
-            return \
-                (match_.group(1) in self.allow_hosts) \
-                    or (".googlevideo.com" in match_.group(1))
+            return (match_.group(1) in self.allow_hosts) or (".googlevideo.com" in match_.group(1))
 
     @staticmethod
     def __remove_cookie(cookie: str, cookie_full: str) -> str:
@@ -96,8 +99,8 @@ class ProxyApp:
         """
         pattern: re.Pattern[str] = re.compile(rf'{cookie}=[^;]*;?\s*')
         return re.sub(pattern, "", cookie_full)
-    
-    def __replace_url(self, match: re.match) -> str:
+
+    def __replace_url(self, match: re.Match[str] | None) -> str | None:
         """
         Replace a matched URL with an appropriate replacement based on the request host.
 
@@ -107,12 +110,13 @@ class ProxyApp:
         Returns:
             str: The replaced URL.
         """
+        if not match:
+            return
+        
         url: str = match.group(0)
-        return url if (url == request.host_url[:-1]) or (
-            not self.__is_allowed_host(url)
-        ) else request.host_url + url
-    
-    def __replace_scheme(self, match: re.match) -> str:
+        return url if (url == request.host_url[:-1]) or (not self.__is_allowed_host(url)) else request.host_url + url
+
+    def __replace_scheme(self, match: re.Match[str] | None) -> str | None:
         """
         Replace the scheme (HTTP/HTTPS) in a matched URL with an appropriate replacement.
 
@@ -122,6 +126,9 @@ class ProxyApp:
         Returns:
             str: The replaced URL with the scheme adjusted based on allowed hosts.
         """
+        if not match:
+            return
+        
         http_scheme, host, url_path, remaining = match.groups()
 
         if self.__is_allowed_host(host):
@@ -172,12 +179,11 @@ class ProxyApp:
                         for key, value in dict(headers).items()
                     }
                     headers["Host"] = f"www.{self.yt_domain}"
-                    headers["Cookie"] = self.__remove_cookie("session", headers["Cookie"]) \
-                        if "Cookie" in headers.keys() else None
+                    headers["Cookie"] = self.__remove_cookie("session", headers.get("Cookie", ""))
 
-                match_url_host = re.search(r'(https?://)?([^:/]+)(:\d+)?', external_url)
-                if match_url_host:
-                    headers["Host"] = match_url_host.group(2)
+                    match_url_host = re.search(r'(https?://)?([^:/]+)(:\d+)?', external_url)
+                    if match_url_host:
+                        headers["Host"] = match_url_host.group(2)
 
             else:
                 headers = None
@@ -204,7 +210,8 @@ class ProxyApp:
                         "sec-fetch-dest": "empty",
                         "sec-fetch-mode": "cors",
                         "sec-fetch-site": "cross-site",
-                        "user-agent": headers["User-Agent"] if (headers and "User-Agent" in headers.keys()) else None
+                        "user-agent": headers.get("User-Agent", None) \
+                            if headers else None
                     },
                     timeout=3
                 )
@@ -281,7 +288,6 @@ class ProxyApp:
                             r'f.Cd=".*";', 
                             f'f.Cd="suggestqueries-clients6.{self.yt_domain}";', 
                         content)
-                        """"""
                         content = re.sub(
                             r'f&&\(c=a.s\+a.o\+a.u\+"\?"', 
                             f'f&&(c="{request.host_url}https://"+a.o+a.u+"?"', 
@@ -338,9 +344,7 @@ class ProxyApp:
             """
             yt_d = f"https://www.{self.yt_domain}"
 
-            if (path.startswith(("http://", "https://",))) \
-            and(not path.startswith((request.host_url, yt_d,))) \
-            :
+            if (path.startswith(("http://", "https://",))) and (not path.startswith((request.host_url, yt_d,))):
                 if not self.__is_allowed_host(path):
                     return "host not allowed", 403
                 external_url: str = path
@@ -348,11 +352,11 @@ class ProxyApp:
                 external_url = f"{yt_d}/{path}"
 
             return self.__fetch_and_proxy(
-                external_url, 
-                request.method, 
-                request.args, 
-                request.headers,
-                request.data
+                external_url=external_url, 
+                method=request.method, 
+                params=request.args, 
+                headers=request.headers,
+                data=request.data
             )
         
         @self.app.route('/', methods=("GET",))
@@ -373,7 +377,6 @@ class ProxyApp:
             )
 
         self.app.run()
-
 
 if __name__ == '__main__':
     proxy_app = ProxyApp()
