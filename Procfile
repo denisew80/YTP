@@ -1,1 +1,1 @@
-web: gunicorn app:ProxyApp --log-file=-
+web: waitress-serve app:ProxyApp
