@@ -15,28 +15,52 @@ class ProxyApp:
         self.limiter = Limiter(
             app=self.app,
             key_func=lambda: request.remote_addr,  # Rate limit by IP address
-            default_limits=["2000 per minute", "60 per second"]
+            default_limits=[
+                "5000 per minute", 
+                "80 per second"
+            ]
         )
 
         self.trace = lambda code: (f"<pre>\n{traceback.format_exc()}</pre>", code,) \
             if self.app.debug else ("Error %d" % code, code,)
 
         self.yt_domain: str = "youtube.com"
-        self.allow_hosts: tuple[str] = (
-            'accounts.google.com', 'apis.google.com', 'client-channel.google.com',
-            'clients4.google.com', 'developers.google.com', 'docs.google.com',
-            'families.google.com', 'fonts.googleapis.com', 'fonts.gstatic.com',
-            'i.ytimg.com', 'jnn-pa.googleapis.com', 'myaccount.google.com',
-            'play.google.com', 'ssl.gstatic.com', 'support.google.com',
-            'www.google.com', 'www.google.com.ua', 'www.google.ru', 'www.google.by',
-            'www.google.kz', 'www.googletagmanager.com', 'www.gstatic.com',
-            'yt3.ggpht.com', 'googleads.g.doubleclick.net', 'static.doubleclick.net',
-        )
+        self.allow_hosts = set([
+            'accounts.google.com', 
+            'apis.google.com', 
+            'client-channel.google.com',
+            'clients4.google.com',
+            'developers.google.com', 
+            'docs.google.com',
+            'families.google.com', 
+            'fonts.googleapis.com', 
+            'fonts.gstatic.com',
+            'i.ytimg.com',
+            'i1.ytimg.com',
+            'jnn-pa.googleapis.com', 
+            'myaccount.google.com',
+            'play.google.com',
+            'ssl.gstatic.com',
+            'suggestqueries-clients6.youtube.com',
+            'support.google.com',
+            'www.google.com',
+            'www.googletagmanager.com', 
+            'www.gstatic.com',
+            'yt3.ggpht.com', 
+            'googleads.g.doubleclick.net', 
+            'static.doubleclick.net',
+        ]+[
+            "www%s" % h 
+            for h in requests.get(
+                "https://www.google.com/supported_domains"
+            ).text.split("\n") if h
+        ])
+
         self.trackers_endswith: tuple[str] = (
-            "/log", "/stats/qoe", "/log_event", "/ptracking"
+            "/log", "/jserror", "/feedback", "/stats/qoe", "/log_event", "/ptracking", "/stats/atr",
         )
         self.trackers_f: tuple[str] = (
-            "doubleclick.net", "/pagead/",
+            "doubleclick.net", "googlesyndication.com", "/pagead/",
         )
 
     def __is_allowed_host(self, url: str) -> bool | None:
@@ -54,7 +78,9 @@ class ProxyApp:
         """
         match_ = re.search(r'https?://([^:/]+)', url)
         if match_:
-            return match_.group(1) in self.allow_hosts
+            return \
+                (match_.group(1) in self.allow_hosts) \
+                    or (".googlevideo.com" in match_.group(1))
 
     @staticmethod
     def __remove_cookie(cookie: str, cookie_full: str) -> str:
@@ -126,13 +152,16 @@ class ProxyApp:
                   HTTP status code (400 for request error, 500 for other errors).
         """
         try:
+            # Check if the URL ends with certain patterns or contains specific substrings
             if external_url.endswith(self.trackers_endswith) or any([(f in external_url) for f in self.trackers_f]):
+                # If it matches, return a 204 (No Content) response
                 return "", 204
 
             if not params:
                 params = {}
             if "key" not in params.keys():
                 if headers:
+                    # Manipulate headers for certain conditions
                     headers = {
                         key: re.sub(
                             r":\d+", "", value.replace(
@@ -143,7 +172,6 @@ class ProxyApp:
                         for key, value in dict(headers).items()
                     }
                     headers["Host"] = f"www.{self.yt_domain}"
-                    """"""
                     headers["Cookie"] = self.__remove_cookie("session", headers["Cookie"]) \
                         if "Cookie" in headers.keys() else None
 
@@ -156,57 +184,60 @@ class ProxyApp:
 
             if params:
                 params = {
-                    key: value.replace(request.host, self.yt_domain) 
+                    key: value.replace(request.host, self.yt_domain)
                     for key, value in dict(params).items()
                 }
 
             if method == "POST":
+                # Make an OPTIONS request before the actual POST request
                 requests.request(
                     method="OPTIONS",
                     url=external_url,
                     headers={
-                        # "authority": "jnn-pa.googleapis.com", 
-                        "accept": "*/*", 
-                        "access-control-request-headers": "content-type,x-goog-api-key,x-user-agent", 
-                        "access-control-request-method": "POST", 
-                        "cache-control": "no-cache", 
-                        "origin": f"https://www.{self.yt_domain}", 
-                        "pragma": "no-cache", 
-                        "referer": f"https://www.{self.yt_domain}/", 
-                        "sec-fetch-dest": "empty", 
-                        "sec-fetch-mode": "cors", 
-                        "sec-fetch-site": "cross-site", 
+                        "accept": "*/*",
+                        "access-control-request-headers": "content-type,x-goog-api-key,x-user-agent",
+                        "access-control-request-method": "POST",
+                        "cache-control": "no-cache",
+                        "origin": f"https://www.{self.yt_domain}",
+                        "pragma": "no-cache",
+                        "referer": f"https://www.{self.yt_domain}/",
+                        "sec-fetch-dest": "empty",
+                        "sec-fetch-mode": "cors",
+                        "sec-fetch-site": "cross-site",
                         "user-agent": headers["User-Agent"] if (headers and "User-Agent" in headers.keys()) else None
                     },
                     timeout=3
                 )
 
+            # Make the actual request to the external URL
             response = requests.request(
-                method=method, 
-                url=external_url, 
-                params=params, 
+                method=method,
+                url=external_url,
+                params=params,
                 headers=headers,
                 data=data,
-                allow_redirects=False, 
+                allow_redirects=False,
                 timeout=5
             )
 
+            # Manipulate response headers
             response.headers = {
                 key: value.replace(self.yt_domain, request.host)
                 for key, value in response.headers.items()
-                if key not in ("Transfer-Encoding", "Content-Encoding",)
+                if key not in ("Transfer-Encoding", "Content-Encoding", "X-Frame-Options",)
             }
 
             if "Location" in response.headers.keys():
                 response.headers["Location"] = \
                     re.sub(
-                        r'(https?://[\w.-]+(?::\d+)?)', 
+                        r'(https?://[\w.-]+(?::\d+)?)',
                         self.__replace_url, response.headers["Location"]
                     )
 
-            # content process
+            # Process content based on Content-Type
             content: bytes = response.content
             c_type: str = response.headers.get("Content-Type")
+
             if c_type:
                 if c_type.split("/")[0] in ("text", "application",):
                     domain_pattern: re.Pattern[str] = re.compile(r'\b(www\.)?youtube\.com\b')
@@ -215,12 +246,56 @@ class ProxyApp:
                     if request.scheme == "http":
                         content = content.replace(f"https://{request.host}", request.host_url[:-1])
 
-                    content: str = re.sub(r'(https?://[\w.-]+(?::\d+)?)', self.__replace_url, content)
+                    content = re.sub(r'(https?://[\w.-]+(?::\d+)?)', self.__replace_url, content)
 
-                    if request.url.endswith(("base.js", "desktop_polymer_enable_wil_icons.js",)):
-                        content: str = re.sub(r'(?<=\s|")//(.*?)(?=\s|"|$)', request.host_url+r'https://\1', content)
+                    if request.base_url.endswith(("base.js", "desktop_polymer_enable_wil_icons.js",)):
+                        content = re.sub(r'console\.info\("LegacyDataMixin.*"\);', '', content)
+                        content = re.sub(r'(?<=\s|")//(.*?)(?=\s|"|$)', request.host_url+r'https://\1', content) \
+                            .replace('a.protocol+"://', f'a.protocol+"{request.host_url}https://')
 
-                    content: str = re.sub(r'(http://)([^/]+)(/http://)([^/]+)', self.__replace_scheme, content)
+                    if request.base_url.endswith("cast_sender.js"):
+                        content = content.replace('("//', f'("{request.host_url}https://')
+
+                    if request.base_url.endswith("base.js"):
+                        content = content.replace('if(!UI(a.B)&&!a.B.startsWith("local"))throw new g.aC("Untrusted URL",a.B);', '')
+
+                    content = re.sub(r'href=(https?://[^\"\s]+)', r'href="\1"', content)
+                    content = re.sub(r'lue\":(https://[^,]+)', r'":"\1"', content)
+
+                    content = re.sub(r'('+request.host_url+r')+', request.host_url, content)
+
+                    content = re.sub(r'(http://)([^/]+)(/http://)([^/]+)', self.__replace_scheme, content)
+
+                    content = content \
+                        .replace('rel="stylesheet" href="//', f'rel="stylesheet" href="{request.host_url}https://') \
+                        .replace('lue":"//www.', f'lue":"{request.host_url}https://www.') \
+                        .replace('a.protocol+"https', '"https')
+
+                    # permanent dark mode
+                    # content = content.replace('" system-icons', '" dark system-icons')
+
+                    if request.base_url.endswith("www-searchbox.js"):
+                        content = re.sub(
+                            r'f.Cd=".*";', 
+                            f'f.Cd="suggestqueries-clients6.{self.yt_domain}";', 
+                        content)
+                        """"""
+                        content = re.sub(
+                            r'f&&\(c=a.s\+a.o\+a.u\+"\?"', 
+                            f'f&&(c="{request.host_url}https://"+a.o+a.u+"?"', 
+                        content)
+
+                    content = content \
+                        .replace("https://"*2, "https://") \
+                        .replace("https://youtu.be/", f"{request.host_url}watch?v=") \
+                        .replace(f'"spec":"{request.host_url}https://i.yt', '"spec":"https://i.yt') \
+                        .replace(f'protocol+"{request.host_url}https://"+f.location', 'protocol+"//"+f.location') \
+                        .replace(f'protocol+"{request.host_url}https://"+document', 'protocol+"//"+document') \
+                        .replace(f'=a.indexOf("{request.host_url}https://")&&(a=window', '=a.indexOf("//")&&(a=window') \
+                        .replace(f'(l+="{request.host_url}https://",b&&', '(l+="//",b&&') \
+                        .replace(f'(/^[a-zA-Z]+:\/\//,"{request.host_url}https://")', '(/^[a-zA-Z]+:\/\//,"//")') \
+                        .replace(f'a.push("{request.host_url}https://")', 'a.push("//")') \
+                        .replace(f'=c.indexOf("{request.host_url}https://")&&(c=a.Z', '=c.indexOf("//")&&(c=a.Z')
 
             # Create a Flask response with the decoded content and headers
             proxied_response = Response(
