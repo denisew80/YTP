@@ -257,7 +257,9 @@ class ProxyApp:
                         content = content.replace('("//', f'("{request.host_url}https://')
 
                     if request.base_url.endswith("base.js"):
-                        content = content.replace('if(!UI(a.B)&&!a.B.startsWith("local"))throw new g.aC("Untrusted URL",a.B);', '')
+                        content = content \
+                            .replace('if(!UI(a.B)&&!a.B.startsWith("local"))throw new g.aC("Untrusted URL",a.B);', '') \
+                            .replace('catch(l){throw g.QF(l),(l&&l instanceof Error?l:Error(String(l))).stack;}', 'catch(_)\{\}')
 
                     content = re.sub(r'href=(https?://[^\"\s]+)', r'href="\1"', content)
                     content = re.sub(r'lue\":(https://[^,]+)', r'":"\1"', content)
@@ -287,15 +289,22 @@ class ProxyApp:
 
                     content = content \
                         .replace("https://"*2, "https://") \
-                        .replace("https://youtu.be/", f"{request.host_url}watch?v=") \
-                        .replace(f'"spec":"{request.host_url}https://i.yt', '"spec":"https://i.yt') \
-                        .replace(f'protocol+"{request.host_url}https://"+f.location', 'protocol+"//"+f.location') \
-                        .replace(f'protocol+"{request.host_url}https://"+document', 'protocol+"//"+document') \
-                        .replace(f'=a.indexOf("{request.host_url}https://")&&(a=window', '=a.indexOf("//")&&(a=window') \
-                        .replace(f'(l+="{request.host_url}https://",b&&', '(l+="//",b&&') \
-                        .replace(f'(/^[a-zA-Z]+:\/\//,"{request.host_url}https://")', '(/^[a-zA-Z]+:\/\//,"//")') \
-                        .replace(f'a.push("{request.host_url}https://")', 'a.push("//")') \
-                        .replace(f'=c.indexOf("{request.host_url}https://")&&(c=a.Z', '=c.indexOf("//")&&(c=a.Z')
+                        .replace("https://youtu.be/", f"{request.host_url}watch?v=")
+
+                    if request.base_url.endswith("base.js"):
+                        for p in (
+                            'protocol+"%s//"+f.location',
+                            'protocol+"%s//"+document',
+                            '=a.indexOf("%s//")&&(a=window',
+                            '(l+="%s//",b&&',
+                            '(/^[a-zA-Z]+:\/\//,"%s//")',
+                            'a.push("%s//")',
+                            '=c.indexOf("%s//")&&(c=a.Z',
+                            'a=a+"%s//"+b+c',
+                            'c:"%s//"+b.Nm+"',
+                            'startsWith("%s//")&&(a="https:'
+                        ):
+                            content = content.replace(p % f"{request.host_url}https:", p % "")
 
             # Create a Flask response with the decoded content and headers
             proxied_response = Response(
