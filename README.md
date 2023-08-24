@@ -1,3 +1,9 @@
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![codebeat badge](https://codebeat.co/badges/d57442c7-9eae-4c04-8d9e-66d7663ec36b)](https://codebeat.co/projects/github-com-koval01-ytproxy-main)
+
+[![Deploy](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy?template=https://github.com/koval01/YTproXy/tree/main)
+[![Run on Repl.it](https://repl.it/badge/github/koval01/YTproXy)](https://repl.it/github/koval01/YTproXy)
+
 ---
 
 # YouTube Web Proxy
