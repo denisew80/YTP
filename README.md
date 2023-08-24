@@ -118,6 +118,20 @@ pip install -U waitress
    sudo systemctl reload nginx
    ```
 
+#### Cloudflare Integration
+
+1. Sign up for a Cloudflare account if you don't already have one: [Cloudflare Signup](https://www.cloudflare.com/)
+
+2. Add your domain to Cloudflare and follow their DNS setup instructions.
+
+3. Once your domain is set up on Cloudflare, enable the CDN features like caching, DDoS protection, and SSL/TLS. Refer to Cloudflare's documentation for guidance.
+
+4. In your Cloudflare dashboard, set up a CNAME record to point to your server's domain or IP address. This will enable Cloudflare's CDN for your proxy server.
+
+5. Ensure your domain's DNS settings are configured to use Cloudflare's nameservers.
+
+Your YouTube proxy should now be accessible via your domain name with enhanced performance and security through Cloudflare's CDN.
+
 #### Start the Waitress Server
 
 Start the Waitress server on port 8080:
