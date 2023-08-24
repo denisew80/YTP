@@ -122,12 +122,12 @@ class ProxyApp:
         Returns:
             str: The replaced URL with the scheme adjusted based on allowed hosts.
         """
-        return "%s%s/%s%s" % (
-            match.group(1), 
-            match.group(2), 
-            match.group(3)[1:].replace('http://', 'https://') if self.__is_allowed_host(match.group(2)) else match.group(3), 
-            match.group(4)
-        )
+        http_scheme, host, url_path, remaining = match.groups()
+
+        if self.__is_allowed_host(host):
+            return f"{http_scheme}://{host}/{url_path[1:].replace('http://','https://')}{remaining}"
+        
+        return match.group(0)
 
     def __fetch_and_proxy(
             self, external_url: str, method: str = "GET", 
